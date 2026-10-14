@@ -50,11 +50,16 @@ type Status struct {
 	SubTotal          *int64   `json:"subTotal,omitempty"`
 	SubExpire         *int64   `json:"subExpire,omitempty"`
 	SubUpdateInterval *int64   `json:"subUpdateInterval,omitempty"`
+
+	// SubContentDisposition is the primary subscription's raw header. Clients
+	// decode the filename so they can tolerate non-conformant server values.
+	SubContentDisposition *string `json:"subContentDisposition,omitempty"`
 }
 
 type fetchHeader struct {
 	SubscriptionUserInfo  string
 	ProfileUpdateInterval string
+	ContentDisposition    string
 }
 
 func openUrl(ctx context.Context, url string, userAgent string, hwid string, requestDialer C.Dialer) (io.ReadCloser, fetchHeader, error) {
@@ -66,6 +71,7 @@ func openUrl(ctx context.Context, url string, userAgent string, hwid string, req
 	return response.Body, fetchHeader{
 		SubscriptionUserInfo:  response.Header.Get("subscription-userinfo"),
 		ProfileUpdateInterval: response.Header.Get("profile-update-interval"),
+		ContentDisposition:    response.Header.Get("content-disposition"),
 	}, nil
 }
 
@@ -171,7 +177,8 @@ func parseProfileUpdateInterval(value string) (int64, bool) {
 func reportSubscriptionInfo(header fetchHeader, reportStatus func(string)) {
 	userinfo := header.SubscriptionUserInfo
 	updateIntervalHeader := header.ProfileUpdateInterval
-	if userinfo == "" && updateIntervalHeader == "" {
+	contentDisposition := strings.TrimSpace(header.ContentDisposition)
+	if userinfo == "" && updateIntervalHeader == "" && contentDisposition == "" {
 		return
 	}
 
@@ -193,6 +200,10 @@ func reportSubscriptionInfo(header fetchHeader, reportStatus func(string)) {
 
 	if interval, ok := parseProfileUpdateInterval(updateIntervalHeader); ok {
 		status.SubUpdateInterval = &interval
+	}
+
+	if contentDisposition != "" {
+		status.SubContentDisposition = &contentDisposition
 	}
 
 	bytes, _ := json.Marshal(&status)

@@ -55,6 +55,11 @@ and coroutine adapters. The old CMFA `Clash`/`Bridge` classes are not included.
   HTTP 200 denials. Completion errors use `HWID_INVALID`, `HWID_NOT_SUPPORTED`,
   or `HWID_LIMIT_REACHED`; clients should localize these stable codes. The library
   does not generate or persist device identifiers.
+- The primary HTTP subscription reports a `SubscriptionInfo` status when it
+  returns `subscription-userinfo`, `profile-update-interval` or
+  `content-disposition`. `subContentDisposition` carries the raw
+  `Content-Disposition` value; clients decode the filename (for example to name
+  a new profile). Providers never report it, and older bindings omit the field.
 - Group delay calls return partial successes, matching the Clash HTTP API;
   an error is returned when no member succeeds.
 - `startTun` borrows the caller's descriptor and retains a duplicate. Pass
