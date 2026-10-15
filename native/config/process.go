@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -122,10 +121,6 @@ func patchProviders(cfg *config.RawConfig, profileDir string) error {
 }
 
 func validConfig(cfg *config.RawConfig, _ string) error {
-	if len(cfg.Proxy) == 0 && len(cfg.ProxyProvider) == 0 {
-		return errors.New("profile does not contain `proxies` or `proxy-providers`")
-	}
-
 	if _, err := regexp2.Compile(cfg.ClashForAndroid.UiSubtitlePattern, 0); err != nil {
 		return fmt.Errorf("compile ui-subtitle-pattern: %s", err.Error())
 	}
