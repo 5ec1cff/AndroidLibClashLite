@@ -7,6 +7,7 @@ package autoswitch
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,8 @@ const maxEvents = 100
 // most 8 further failing rounds, so an offline device does not probe every node
 // at every interval.
 const maxScanBackoff = 8
+
+const filterMatchTimeout = 50 * time.Millisecond
 
 type EventKind string
 
@@ -66,12 +69,14 @@ type Event struct {
 }
 
 type GroupStatus struct {
-	Name      string          `json:"name"`
-	Kind      GroupStatusKind `json:"kind"`
-	Node      string          `json:"node,omitempty"`
-	Delay     uint16          `json:"delay,omitempty"`
-	Failures  int             `json:"failures,omitempty"`
-	CheckedAt int64           `json:"checkedAt"`
+	Name     string          `json:"name"`
+	Kind     GroupStatusKind `json:"kind"`
+	Node     string          `json:"node,omitempty"`
+	Delay    uint16          `json:"delay,omitempty"`
+	Failures int             `json:"failures,omitempty"`
+	// InUse marks a healthy result proven by live traffic instead of a probe.
+	InUse     bool  `json:"inUse,omitempty"`
+	CheckedAt int64 `json:"checkedAt"`
 }
 
 type ProgressStage string
@@ -171,8 +176,9 @@ func ClearOverride() {
 	current.restartLocked()
 }
 
-func Snapshot() State {
-	e := current
+func Snapshot() State { return current.snapshot() }
+
+func (e *engine) snapshot() State {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	state := State{
@@ -181,7 +187,10 @@ func Snapshot() State {
 		Phase:       e.phase,
 		NextCheckAt: e.nextCheckAt,
 		Groups:      make([]GroupStatus, 0, len(e.active.Groups)),
-		Events:      append([]Event(nil), e.events...),
+		Events:      make([]Event, len(e.events)),
+	}
+	for i, event := range e.events {
+		state.Events[len(e.events)-1-i] = event
 	}
 	if e.progress != nil {
 		progress := *e.progress
@@ -210,6 +219,9 @@ func (e *engine) restartLocked() {
 	if err != nil {
 		log.Warnln("[AutoSwitch] Invalid preferred-filter: %s", err.Error())
 		filter = nil
+	} else if filter != nil {
+		// A hand-written raw-profile pattern must not burn CPU on backtracking.
+		filter.MatchTimeout = filterMatchTimeout
 	}
 	expected, err := utils.NewUnsignedRanges[uint16](settings.ExpectedStatus)
 	if err != nil {
@@ -230,7 +242,7 @@ func (e *engine) restartLocked() {
 	done := make(chan struct{})
 	e.cancel, e.done = cancel, done
 	checker := &checker{engine: e, settings: settings, filter: filter, expected: expected,
-		failures: make(map[string]failure)}
+		failures: make(map[string]failure), checkedAt: make(map[string]time.Time), startedAt: time.Now()}
 	go func() {
 		defer close(done)
 		checker.run(ctx)
@@ -267,9 +279,12 @@ func (e *engine) setGroup(status GroupStatus) {
 func (e *engine) record(event Event) {
 	event.Time = time.Now().UnixMilli()
 	e.mu.Lock()
-	e.events = append([]Event{event}, e.events...)
-	if len(e.events) > maxEvents {
-		e.events = e.events[:maxEvents]
+	// Stored oldest first so appending does not copy the history; Snapshot reverses it.
+	if len(e.events) == maxEvents {
+		copy(e.events, e.events[1:])
+		e.events[maxEvents-1] = event
+	} else {
+		e.events = append(e.events, event)
 	}
 	e.mu.Unlock()
 }
@@ -287,6 +302,9 @@ type checker struct {
 	filter   *regexp2.Regexp
 	expected utils.IntRanges[uint16]
 	failures map[string]failure
+	// checkedAt holds each group's previous check; traffic newer than it proves health.
+	checkedAt map[string]time.Time
+	startedAt time.Time
 }
 
 func (c *checker) run(ctx context.Context) {
@@ -325,6 +343,19 @@ func (c *checker) checkGroup(ctx context.Context, name string) {
 	if proxy == nil || !isLeaf(proxy) {
 		delete(c.failures, name)
 		c.engine.setGroup(GroupStatus{Name: name, Kind: GroupSkipped, Node: selected})
+		return
+	}
+
+	since, ok := c.checkedAt[name]
+	if !ok {
+		since = c.startedAt
+	}
+	c.checkedAt[name] = time.Now()
+	// While the device is in use, new connections through the node already prove it works;
+	// skipping the probe saves a radio wakeup and traffic on every interval.
+	if servedSince(name, selected, since) {
+		delete(c.failures, name)
+		c.engine.setGroup(GroupStatus{Name: name, Kind: GroupHealthy, Node: selected, InUse: true})
 		return
 	}
 
@@ -513,6 +544,27 @@ func isLeaf(proxy C.Proxy) bool {
 		return false
 	}
 	return true
+}
+
+// servedSince reports whether a connection opened through group and node after since has
+// received data. Only new connections count, so a stale long-lived stream cannot hide a node
+// that no longer accepts connections.
+func servedSince(group, node string, since time.Time) bool {
+	served := false
+	statistic.DefaultManager.Range(func(tracker statistic.Tracker) bool {
+		info := tracker.Info()
+		if info.DownloadTotal.Load() == 0 || !info.Start.After(since) {
+			return true
+		}
+		chains := tracker.Chains()
+		// Chains run from the leaf node outwards through each enclosing group.
+		if len(chains) > 0 && chains[0] == node && slices.Contains(chains[1:], group) {
+			served = true
+			return false
+		}
+		return true
+	})
+	return served
 }
 
 // closeConnectionsThrough matches the embedded selector patch: connections still

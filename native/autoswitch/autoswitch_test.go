@@ -17,6 +17,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 // fakeNode dials the local test server when healthy, regardless of the URL host.
@@ -147,5 +148,49 @@ func TestPatchOverridesConfigurationUntilCleared(t *testing.T) {
 	ClearOverride()
 	if state := Snapshot(); state.Source != SourceConfig || state.Settings.Interval != 20 {
 		t.Fatalf("after clear: %+v", state)
+	}
+}
+
+func TestServedSinceRequiresNewConnectionWithData(t *testing.T) {
+	since := time.Now()
+	time.Sleep(time.Millisecond)
+	node := &fakeNode{Base: outbound.NewBase(outbound.BaseOption{Name: "A", Type: C.Socks5})}
+	group := outbound.NewBase(outbound.BaseOption{Name: "G", Type: C.Selector})
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = server.Close() })
+	conn := outbound.NewConn(client, node)
+	conn.AppendToChains(group)
+	tracker := statistic.NewTCPTracker(conn, statistic.DefaultManager, &C.Metadata{}, nil, 0, 0, false)
+	statistic.DefaultManager.Join(tracker)
+	t.Cleanup(func() { _ = tracker.Close() })
+
+	if servedSince("G", "A", since) {
+		t.Fatal("a connection without received data proved health")
+	}
+	tracker.Info().DownloadTotal.Store(128)
+	for _, test := range []struct {
+		group, node string
+		since       time.Time
+		want        bool
+	}{
+		{"G", "A", since, true},
+		{"G", "B", since, false},
+		{"Other", "A", since, false},
+		{"G", "A", time.Now(), false},
+	} {
+		if got := servedSince(test.group, test.node, test.since); got != test.want {
+			t.Errorf("servedSince(%s, %s) = %v, want %v", test.group, test.node, got, test.want)
+		}
+	}
+}
+
+func TestEventsAreNewestFirstAndBounded(t *testing.T) {
+	e := &engine{}
+	for i := range maxEvents + 5 {
+		e.record(Event{Failures: i})
+	}
+	events := e.snapshot().Events
+	if len(events) != maxEvents || events[0].Failures != maxEvents+4 || events[maxEvents-1].Failures != 5 {
+		t.Fatalf("got %d events, first %d, last %d", len(events), events[0].Failures, events[len(events)-1].Failures)
 	}
 }

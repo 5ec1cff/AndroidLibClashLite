@@ -139,8 +139,12 @@ asterisk-auto-switch:
   concurrency: 5               # 1-32 candidate tests at once
 ```
 
-Each round tests the selected node of every listed group. Only leaf nodes are
-monitored; DIRECT/REJECT/PASS selections and nested groups are skipped. After
+Each round checks the selected node of every listed group. Only leaf nodes are
+monitored; DIRECT/REJECT/PASS selections and nested groups are skipped. A
+connection opened through that node and group since the previous check that has
+received data counts as healthy without a probe (`inUse` in the group status),
+so an actively used device sends no extra test traffic; otherwise the node is
+probed with `url`. After
 the threshold, healthy members matching `preferred-filter` are preferred,
 otherwise any healthy member; the lowest delay wins within a tier. The selection
 changes only if it is still the node that failed, so a manual choice made during
