@@ -86,6 +86,9 @@ and coroutine adapters. The old CMFA `Clash`/`Bridge` classes are not included.
   proxy, provider and connection queries retain JSON payloads. AGE decryption
   returns plaintext or throws an exception.
 
+- `queryAutoSwitch()` and `patchAutoSwitch(settingsJSON)` mirror the
+  [auto-switch](#auto-switch) Clash API endpoint for the embedded runtime.
+
 The exported surface covers META's current configuration, subscription, TUN,
 logging, traffic, proxy/provider, Android platform notifications and AGE
 operations. Unused HTTP-forwarder, health-check and key-generation entry points
@@ -114,6 +117,47 @@ restores environment settings, including `XDG_CONFIG_HOME`, `SAFE_PATHS`,
 `GOGC`, `GOMEMLIMIT` and `GOMAXPROCS`. JNI retains Android embedding and socket
 protection callbacks. Checked source overlays adapt the pinned upstream module;
 they fail when expected source patterns change.
+
+## Auto-switch
+
+The core can replace a failed node selected in a manual `select` group with a
+healthy member of that group. It runs in the core for both JNI and CLI, so ROOT
+operation needs no application process or Android service. Like `url-test` and
+`fallback`, it changes only in-core selection: no ROOT, system or DNS resource
+is touched. Configure it with the top-level key (upstream Mihomo ignores it):
+
+```yaml
+asterisk-auto-switch:
+  enable: true
+  groups: [Proxy]              # select groups only
+  preferred-filter: "(?i)HK"   # regexp2, like a group filter; optional
+  failure-threshold: 3         # 1-10 consecutive failures
+  interval: 30                 # 10-3600 seconds between rounds
+  url: https://www.gstatic.com/generate_204
+  timeout: 5000                # 1000-30000 ms per test
+  expected-status: ""
+  concurrency: 5               # 1-32 candidate tests at once
+```
+
+Each round tests the selected node of every listed group. Only leaf nodes are
+monitored; DIRECT/REJECT/PASS selections and nested groups are skipped. After
+the threshold, healthy members matching `preferred-filter` are preferred,
+otherwise any healthy member; the lowest delay wins within a tier. The selection
+changes only if it is still the node that failed, so a manual choice made during
+the scan wins. A switch updates the store-selected cache and closes connections
+through the group. A scan that finds no healthy member is retried after 1, 2, 4
+and then at most 8 failing rounds, so an offline device does not probe every node
+each interval.
+
+`GET /asterisk/auto-switch` (authenticated like other Clash API routes) returns
+the active settings, their source (`config` or `control`), phase, next check
+time, progress, per-group status and up to 100 newest-first events (`failed`,
+`switched`, `no-replacement`, `selection-changed`). Events stay in memory only.
+`PATCH /asterisk/auto-switch` with the same JSON settings applies immediately.
+The value survives hot profile reloads (`PUT /configs` or JNI load) and lasts
+until the process exits or JNI `reset()`; the YAML value applies again only in a
+new session. Each apply restarts failure counting. Invalid filters, status
+ranges, or an enabled value without groups return 400.
 
 ## Stable tracking and releases
 

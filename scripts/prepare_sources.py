@@ -87,6 +87,23 @@ def prepare_sources(repo, work, core):
     patch('dns/patch_android.go', 'func (c *systemClient) ResetConnection() {',
           'func (c *systemClient) ResetConnection() {\n'
           '\tif !features.CMFA { c.resetNativeConnection(); return }')
+    # Carry the top-level asterisk-auto-switch key through both JNI and CLI
+    # configuration applies, including hot profile reloads.
+    patch('config/config.go', 'package config\n',
+          'package config\n\nimport autoswitchoption "cfa/native/autoswitch/option"\n')
+    patch('config/config.go',
+          '\tClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`\n',
+          '\tClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`\n'
+          '\tAsteriskAutoSwitch autoswitchoption.Settings `yaml:"asterisk-auto-switch" json:"asterisk-auto-switch"`\n')
+    patch('config/config.go', '\tSniffer       *sniffer.Config\n\tTLS           *TLS\n}',
+          '\tSniffer       *sniffer.Config\n\tTLS           *TLS\n'
+          '\tAsteriskAutoSwitch autoswitchoption.Settings\n}')
+    patch('config/config.go', '\tconfig := &Config{}\n',
+          '\tconfig := &Config{AsteriskAutoSwitch: rawCfg.AsteriskAutoSwitch}\n')
+    patch('hub/executor/executor.go', '\t"github.com/metacubex/mihomo/tunnel"\n)',
+          '\t"github.com/metacubex/mihomo/tunnel"\n\n\t"cfa/native/autoswitch"\n)')
+    patch('hub/executor/executor.go', '\ttunnel.OnRunning()\n',
+          '\ttunnel.OnRunning()\n\tautoswitch.Apply(cfg.AsteriskAutoSwitch)\n')
     patches['log/log.go'] = (repo / 'overlay/mihomo/log/log.go').read_text(encoding='utf-8')
 
     # Dependencies enforce ordering before even package-level cached env settings.

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"cfa/native/app"
+	"cfa/native/autoswitch"
 	"cfa/native/config"
 	"cfa/native/delegate"
 	"cfa/native/profilecache"
@@ -55,6 +56,7 @@ func NotifyInstalledAppsChanged(uidList string) {
 }
 
 func Reset() {
+	autoswitch.ClearOverride()
 	config.LoadDefault()
 	tunnel.ResetStatistic()
 	tunnel.CloseAllConnections()
